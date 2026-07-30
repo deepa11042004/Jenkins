@@ -72,6 +72,15 @@ VPC and a subnet in it, then runs `aws cloudformation deploy` against
 `cloudformation/jenkins-stack.yaml`. Watch it in the Actions tab — the
 last step prints the stack outputs, including the Jenkins URL.
 
+The deploy genuinely waits on the boot script now, not just on the EC2
+instance launching: the instance calls `cfn-signal` back to
+CloudFormation once `UserData` finishes (success or failure, via an
+`ERR` trap), and the stack won't report done until that signal arrives
+(up to a 15-minute timeout). So a green `Deploy stack` step now means
+Docker and Jenkins actually came up, not just that the instance
+booted — if the script breaks, the deploy fails loudly instead of
+reporting a false success.
+
 > Your AWS account needs a **default VPC** in the target region for
 > the auto-discovery step to work (every new AWS account has one
 > unless it was deleted). If yours doesn't, pass `VpcId`/`SubnetId`

@@ -135,6 +135,14 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: SignalStackStatus
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: cloudformation:SignalResource
+                Resource: !Ref "AWS::StackId"
 
   JenkinsInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -145,6 +153,16 @@ Resources:
 
   JenkinsInstance:
     Type: AWS::EC2::Instance
+    # Without this, `aws cloudformation deploy` only waits for the EC2
+    # instance resource to launch — it has no idea whether UserData
+    # actually finished successfully. cfn-signal (called at the end of
+    # UserData, or on any earlier failure via the ERR trap) closes that
+    # gap: the stack operation now genuinely fails if the boot script
+    # does, instead of reporting a false green deploy.
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT15M
     Properties:
       ImageId: !Ref LatestUbuntuAmiId
       InstanceType: !Ref InstanceType
@@ -173,6 +191,28 @@ Resources:
           set -euxo pipefail
 
           exec > >(tee -a /var/log/jenkins-bootstrap.log) 2>&1
+
+          ############################################
+          # 0. Set up cfn-signal so CloudFormation actually
+          #    knows whether this script succeeded or failed,
+          #    instead of only tracking "the instance launched."
+          ############################################
+
+          apt-get update -y
+          apt-get install -y curl awscli
+
+          IMDS_TOKEN="$(curl -sX PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")"
+          INSTANCE_ID="$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)"
+
+          signal_failure() {
+            aws cloudformation signal-resource \
+              --stack-name "${AWS::StackName}" \
+              --logical-resource-id JenkinsInstance \
+              --unique-id "$INSTANCE_ID" \
+              --status FAILURE \
+              --region "${AWS::Region}" || true
+          }
+          trap signal_failure ERR
 
           ############################################
           # 1. Wait for the separate data EBS volume to
@@ -282,6 +322,17 @@ Resources:
 
           cd /opt/jenkins
           docker compose up -d
+
+          ############################################
+          # 4. Tell CloudFormation the boot succeeded
+          ############################################
+
+          aws cloudformation signal-resource \
+            --stack-name "${AWS::StackName}" \
+            --logical-resource-id JenkinsInstance \
+            --unique-id "$INSTANCE_ID" \
+            --status SUCCESS \
+            --region "${AWS::Region}"
 
   JenkinsDataVolume:
     Type: AWS::EC2::Volume
