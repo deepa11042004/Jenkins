@@ -59,6 +59,25 @@ Parameters:
     Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
     Description: Resolved automatically to the latest Ubuntu 22.04 AMI via Canonical's public SSM parameter
 
+  DockerHubUsername:
+    Type: String
+    Default: ""
+    Description: >
+      Optional. If set, the instance logs into Docker Hub before pulling
+      the Jenkins image (raises the anonymous-pull rate limit). Leave
+      blank to pull anonymously.
+
+  DockerHubToken:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: >
+      Docker Hub access token (Account Settings > Security > Personal
+      access tokens) — not your account password. Only used if
+      DockerHubUsername is set. NoEcho hides it from the console/CLI
+      output, but it's still stored in plaintext in this instance's
+      UserData — use a scoped, revocable token, not a real password.
+
 Conditions:
   HasKeyName: !Not [!Equals [!Ref KeyName, ""]]
 
@@ -134,10 +153,11 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${ProjectName}-server"
-      # Not using Fn::Sub here on purpose — the script's own bash ${VAR}
-      # expansions would otherwise collide with CloudFormation's ${} syntax.
+      # Fn::Sub injects the Docker Hub parameters below; every other
+      # ${VAR} in this script is bash, not CloudFormation, and is
+      # escaped as ${!VAR} so Fn::Sub leaves it alone.
       UserData:
-        Fn::Base64: |
+        Fn::Base64: !Sub |
           #!/bin/bash
           # Runs once on first boot (EC2 user-data / cloud-init) to turn a bare
           # Ubuntu 22.04 instance into a running Jenkins-in-Docker server.
@@ -176,7 +196,7 @@ Resources:
             exit 1
           fi
 
-          DATA_DEV="/dev/${DATA_DISK}"
+          DATA_DEV="/dev/${!DATA_DISK}"
 
           if ! blkid "$DATA_DEV" >/dev/null 2>&1; then
             mkfs -t ext4 "$DATA_DEV"
@@ -186,7 +206,7 @@ Resources:
           mount "$DATA_DEV" /mnt/jenkins-data
 
           DATA_UUID="$(blkid -s UUID -o value "$DATA_DEV")"
-          grep -q "$DATA_UUID" /etc/fstab || echo "UUID=${DATA_UUID} /mnt/jenkins-data ext4 defaults,nofail 0 2" >> /etc/fstab
+          grep -q "$DATA_UUID" /etc/fstab || echo "UUID=${!DATA_UUID} /mnt/jenkins-data ext4 defaults,nofail 0 2" >> /etc/fstab
 
           mkdir -p /mnt/jenkins-data/jenkins_home
           chown -R 1000:1000 /mnt/jenkins-data/jenkins_home
@@ -204,7 +224,7 @@ Resources:
 
           ARCH="$(dpkg --print-architecture)"
           CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
-          echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${CODENAME} stable" \
+          echo "deb [arch=${!ARCH} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${!CODENAME} stable" \
             > /etc/apt/sources.list.d/docker.list
 
           apt-get update -y
@@ -215,6 +235,17 @@ Resources:
 
           # Make sure the SSM agent (used for shell access instead of SSH) is running.
           snap start amazon-ssm-agent >/dev/null 2>&1 || true
+
+          ############################################
+          # 2b. Optional authenticated Docker Hub login
+          #     (raises the anonymous-pull rate limit)
+          ############################################
+
+          DOCKERHUB_USERNAME="${DockerHubUsername}"
+          DOCKERHUB_TOKEN="${DockerHubToken}"
+          if [ -n "$DOCKERHUB_USERNAME" ]; then
+            echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+          fi
 
           ############################################
           # 3. Write the Jenkins docker-compose file

@@ -49,6 +49,8 @@ New repository secret**. Add:
 | `AWS_SECRET_ACCESS_KEY` | From step 1 |
 | `AWS_REGION` | `ap-south-1` (or your chosen region) |
 | `JENKINS_ADMIN_CIDR` | Your IP in CIDR form, e.g. `1.2.3.4/32` (see security note below) |
+| `DOCKERHUB_USERNAME` | Optional. Your Docker Hub username — if set, the instance logs in before pulling the Jenkins image, raising the anonymous-pull rate limit. |
+| `DOCKERHUB_TOKEN` | Optional, required if `DOCKERHUB_USERNAME` is set. A Docker Hub **access token**, not your password — generate one at [hub.docker.com](https://hub.docker.com) → Account Settings → Security → New Access Token (Read-only scope is enough). See security note below. |
 
 Optional but recommended: create a GitHub **Environment** named
 `production` (Settings → Environments) and require a reviewer on it.
@@ -125,6 +127,14 @@ data volume, and Elastic IP.
   for the security group, ENI, EBS, and EIP resources this stack
   manages, plus the VPC/subnet discovery step) — tighten further if
   you want to.
+- **`DOCKERHUB_TOKEN` is not stored securely on the instance.** It's
+  passed through as an EC2 `UserData` value, which is stored in
+  plaintext (not encrypted, not secret) — readable by anyone who can
+  call `ec2:DescribeInstanceAttribute` on this instance, or who gets a
+  shell on it. That's why this uses a scoped, revocable Docker Hub
+  **access token**, not your real password — if it ever leaks, revoke
+  it from Docker Hub's Security settings and issue a new one, rather
+  than rotating your account password.
 
 ## Cost
 
