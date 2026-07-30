@@ -5,7 +5,7 @@ Push to `main` and GitHub Actions provisions a Jenkins server on AWS
 static IP), using a native AWS CloudFormation template — no separate
 state backend to manage, AWS tracks the stack for you.
 
-## How it's laid out
+## How it's laid out e
 
 ```
 cloudformation/
