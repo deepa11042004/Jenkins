@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "infra/**"
+      - "cloudformation/**"
       - ".github/workflows/deploy.yml"
   workflow_dispatch: {}
 
@@ -12,18 +12,13 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION: ${{ secrets.AWS_REGION }}
-  TF_VAR_aws_region: ${{ secrets.AWS_REGION }}
-  TF_VAR_jenkins_admin_cidr: ${{ secrets.JENKINS_ADMIN_CIDR }}
+  STACK_NAME: jenkins
 
 jobs:
-  terraform:
-    name: Terraform apply
+  deploy:
+    name: CloudFormation deploy
     runs-on: ubuntu-latest
     environment: production
-    defaults:
-      run:
-        working-directory: infra
 
     steps:
       - name: Checkout
@@ -36,28 +31,42 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.9.8"
-
-      - name: Terraform init
+      - name: Validate template
         run: |
-          terraform init \
-            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-            -backend-config="key=jenkins/terraform.tfstate" \
-            -backend-config="region=${{ secrets.AWS_REGION }}" \
-            -backend-config="dynamodb_table=${{ secrets.TF_STATE_DYNAMODB_TABLE }}" \
-            -backend-config="encrypt=true"
+          aws cloudformation validate-template \
+            --template-body file://cloudformation/jenkins-stack.yaml
 
-      - name: Terraform validate
-        run: terraform validate
+      - name: Discover default VPC + subnet
+        id: net
+        run: |
+          VPC_ID=$(aws ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text)
+          if [ "$VPC_ID" = "None" ] || [ -z "$VPC_ID" ]; then
+            echo "No default VPC found in this account/region — pass VpcId/SubnetId manually instead." >&2
+            exit 1
+          fi
+          SUBNET_ID=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=${VPC_ID}" --query 'Subnets[0].SubnetId' --output text)
+          echo "vpc_id=${VPC_ID}" >> "$GITHUB_OUTPUT"
+          echo "subnet_id=${SUBNET_ID}" >> "$GITHUB_OUTPUT"
 
-      - name: Terraform plan
-        run: terraform plan -out=tfplan
-
-      - name: Terraform apply
-        run: terraform apply -auto-approve tfplan
+      - name: Deploy stack
+        env:
+          JENKINS_ADMIN_CIDR: ${{ secrets.JENKINS_ADMIN_CIDR }}
+        run: |
+          # An unset secret comes through as "" rather than truly unset —
+          # fall back explicitly so that doesn't override the template's
+          # default with an invalid empty CIDR.
+          CIDR="${JENKINS_ADMIN_CIDR:-0.0.0.0/0}"
+          aws cloudformation deploy \
+            --stack-name "${STACK_NAME}" \
+            --template-file cloudformation/jenkins-stack.yaml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              VpcId=${{ steps.net.outputs.vpc_id }} \
+              SubnetId=${{ steps.net.outputs.subnet_id }} \
+              JenkinsAdminCidr="${CIDR}"
 
       - name: Show Jenkins URL
-        run: terraform output jenkins_url
+        run: |
+          aws cloudformation describe-stacks --stack-name "${STACK_NAME}" \
+            --query "Stacks[0].Outputs" --output table

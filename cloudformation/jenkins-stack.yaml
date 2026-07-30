@@ -1,0 +1,278 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Jenkins on a single EC2 instance, running in Docker, with a persistent
+  EBS data volume and a static Elastic IP. Access is via AWS SSM Session
+  Manager (no open SSH port) unless a KeyName is supplied.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: jenkins
+    Description: Name prefix used on all resources
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to deploy into (the GitHub Actions workflow auto-fills this with your default VPC)
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet to launch the instance into (must belong to VpcId)
+
+  InstanceType:
+    Type: String
+    Default: t3.medium
+
+  RootVolumeSize:
+    Type: Number
+    Default: 20
+    Description: Root (OS + Docker images) volume size in GB
+
+  JenkinsDataVolumeSize:
+    Type: Number
+    Default: 20
+    Description: Size in GB of the separate EBS volume that persists /var/jenkins_home
+
+  JenkinsAdminCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: >
+      CIDR allowed to reach the Jenkins web UI (8080) and JNLP agent port
+      (50000). Restrict to your own IP (e.g. 1.2.3.4/32) once known —
+      left open, the Jenkins login page is reachable by anyone.
+
+  KeyName:
+    Type: String
+    Default: ""
+    Description: Optional existing EC2 key pair name to enable SSH. Leave blank to rely on SSM Session Manager only (recommended).
+
+  SshCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    Description: CIDR allowed to SSH in — only used if KeyName is set
+
+  LatestUbuntuAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/22.04/stable/current/amd64/hvm/ebs-gp2/ami-id
+    Description: Resolved automatically to the latest Ubuntu 22.04 AMI via Canonical's public SSM parameter
+
+Conditions:
+  HasKeyName: !Not [!Equals [!Ref KeyName, ""]]
+
+Resources:
+  JenkinsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Jenkins EC2 security group
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: !Ref JenkinsAdminCidr
+          Description: Jenkins web UI
+        - IpProtocol: tcp
+          FromPort: 50000
+          ToPort: 50000
+          CidrIp: !Ref JenkinsAdminCidr
+          Description: Jenkins JNLP agent port
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-sg"
+
+  JenkinsSshIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasKeyName
+    Properties:
+      GroupId: !Ref JenkinsSecurityGroup
+      IpProtocol: tcp
+      FromPort: 22
+      ToPort: 22
+      CidrIp: !Ref SshCidr
+      Description: SSH
+
+  JenkinsInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-instance-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  JenkinsInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${ProjectName}-instance-profile"
+      Roles:
+        - !Ref JenkinsInstanceRole
+
+  JenkinsInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestUbuntuAmiId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref JenkinsSecurityGroup
+      IamInstanceProfile: !Ref JenkinsInstanceProfile
+      KeyName: !If [HasKeyName, !Ref KeyName, !Ref "AWS::NoValue"]
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: !Ref RootVolumeSize
+            VolumeType: gp3
+            Encrypted: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-server"
+      # Not using Fn::Sub here on purpose — the script's own bash ${VAR}
+      # expansions would otherwise collide with CloudFormation's ${} syntax.
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          # Runs once on first boot (EC2 user-data / cloud-init) to turn a bare
+          # Ubuntu 22.04 instance into a running Jenkins-in-Docker server.
+          set -euxo pipefail
+
+          exec > >(tee -a /var/log/jenkins-bootstrap.log) 2>&1
+
+          ############################################
+          # 1. Wait for the separate data EBS volume to
+          #    be attached, then format (if new) & mount it.
+          #    Jenkins data lives here so it survives
+          #    instance replacement.
+          ############################################
+
+          ROOT_DISK="$(lsblk -no PKNAME "$(findmnt -n -o SOURCE --target /)" 2>/dev/null || true)"
+
+          DATA_DISK=""
+          for i in $(seq 1 24); do
+            for name in $(lsblk -dno NAME); do
+              if [ "$name" != "$ROOT_DISK" ]; then
+                DATA_DISK="$name"
+                break 2
+              fi
+            done
+            sleep 5
+          done
+
+          if [ -z "$DATA_DISK" ]; then
+            echo "ERROR: data EBS volume never showed up, aborting" >&2
+            exit 1
+          fi
+
+          DATA_DEV="/dev/${DATA_DISK}"
+
+          if ! blkid "$DATA_DEV" >/dev/null 2>&1; then
+            mkfs -t ext4 "$DATA_DEV"
+          fi
+
+          mkdir -p /mnt/jenkins-data
+          mount "$DATA_DEV" /mnt/jenkins-data
+
+          DATA_UUID="$(blkid -s UUID -o value "$DATA_DEV")"
+          grep -q "$DATA_UUID" /etc/fstab || echo "UUID=${DATA_UUID} /mnt/jenkins-data ext4 defaults,nofail 0 2" >> /etc/fstab
+
+          mkdir -p /mnt/jenkins-data/jenkins_home
+          chown -R 1000:1000 /mnt/jenkins-data/jenkins_home
+
+          ############################################
+          # 2. Install Docker Engine + Compose plugin
+          ############################################
+
+          apt-get update -y
+          apt-get install -y ca-certificates curl gnupg
+
+          install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+          chmod a+r /etc/apt/keyrings/docker.asc
+
+          ARCH="$(dpkg --print-architecture)"
+          CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+          echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${CODENAME} stable" \
+            > /etc/apt/sources.list.d/docker.list
+
+          apt-get update -y
+          apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+          systemctl enable docker
+          systemctl start docker
+
+          # Make sure the SSM agent (used for shell access instead of SSH) is running.
+          snap start amazon-ssm-agent >/dev/null 2>&1 || true
+
+          ############################################
+          # 3. Write the Jenkins docker-compose file
+          #    and start it
+          ############################################
+
+          mkdir -p /opt/jenkins
+          cat > /opt/jenkins/docker-compose.yml <<'COMPOSEEOF'
+          services:
+            jenkins:
+              image: jenkins/jenkins:lts-jdk17
+              container_name: jenkins
+              restart: unless-stopped
+              ports:
+                - "8080:8080"
+                - "50000:50000"
+              volumes:
+                - /mnt/jenkins-data/jenkins_home:/var/jenkins_home
+                # Uncomment to let Jenkins build/run Docker images from pipelines
+                # (Docker-in-Docker via the host socket):
+                # - /var/run/docker.sock:/var/run/docker.sock
+              environment:
+                - JAVA_OPTS=-Djenkins.install.runSetupWizard=true
+          COMPOSEEOF
+
+          cd /opt/jenkins
+          docker compose up -d
+
+  JenkinsDataVolume:
+    Type: AWS::EC2::Volume
+    Properties:
+      AvailabilityZone: !GetAtt JenkinsInstance.AvailabilityZone
+      Size: !Ref JenkinsDataVolumeSize
+      VolumeType: gp3
+      Encrypted: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-data"
+
+  JenkinsDataVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: /dev/xvdf
+      InstanceId: !Ref JenkinsInstance
+      VolumeId: !Ref JenkinsDataVolume
+
+  JenkinsEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref JenkinsInstance
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-eip"
+
+Outputs:
+  InstanceId:
+    Description: EC2 instance ID (use with SSM Session Manager)
+    Value: !Ref JenkinsInstance
+
+  JenkinsPublicIp:
+    Description: Static public IP of the Jenkins server
+    Value: !Ref JenkinsEIP
+
+  JenkinsURL:
+    Description: Jenkins web UI URL
+    Value: !Sub "http://${JenkinsEIP}:8080"
+
+  SsmConnectCommand:
+    Description: Run this locally (with AWS CLI configured) to get a shell on the instance
+    Value: !Sub "aws ssm start-session --target ${JenkinsInstance} --region ${AWS::Region}"

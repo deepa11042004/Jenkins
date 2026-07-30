@@ -2,6 +2,28 @@
   "Version": "2012-10-17",
   "Statement": [
     {
+      "Sid": "CloudFormationManageStack",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:CreateStack",
+        "cloudformation:UpdateStack",
+        "cloudformation:DeleteStack",
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResource",
+        "cloudformation:DescribeStackResources",
+        "cloudformation:GetTemplate",
+        "cloudformation:ValidateTemplate",
+        "cloudformation:CreateChangeSet",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:ExecuteChangeSet",
+        "cloudformation:DeleteChangeSet",
+        "cloudformation:ListStacks",
+        "cloudformation:ListStackResources"
+      ],
+      "Resource": "arn:aws:cloudformation:*:*:stack/jenkins/*"
+    },
+    {
       "Sid": "EC2Full",
       "Effect": "Allow",
       "Action": [
@@ -41,29 +63,13 @@
       ]
     },
     {
-      "Sid": "TerraformStateAccess",
+      "Sid": "ResolveUbuntuAmiParameter",
       "Effect": "Allow",
       "Action": [
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:ListBucket",
-        "s3:DeleteObject"
+        "ssm:GetParameters",
+        "ssm:GetParameter"
       ],
-      "Resource": [
-        "arn:aws:s3:::jenkins-tfstate-*",
-        "arn:aws:s3:::jenkins-tfstate-*/*"
-      ]
-    },
-    {
-      "Sid": "TerraformStateLock",
-      "Effect": "Allow",
-      "Action": [
-        "dynamodb:GetItem",
-        "dynamodb:PutItem",
-        "dynamodb:DeleteItem",
-        "dynamodb:DescribeTable"
-      ],
-      "Resource": "arn:aws:dynamodb:*:*:table/jenkins-tfstate-lock"
+      "Resource": "arn:aws:ssm:*::parameter/aws/service/canonical/*"
     }
   ]
 }
