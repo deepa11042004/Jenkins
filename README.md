@@ -128,8 +128,18 @@ data volume, and Elastic IP.
 
 ## Cost
 
-Roughly, in `ap-south-1`: a `t3.medium` on-demand EC2 instance +
-2×20GB gp3 EBS volumes + one Elastic IP (free while attached to a
-running instance) comes to about **$25–35/month** if left running
-24/7. Destroy it when not in use if that matters to you — see teardown
-above.
+With the default `t3.micro`, compute is covered by the AWS Free Tier
+(if your account still has it — 750 hrs/month for the first 12 months
+on older accounts, or the newer 6-month credit-based Free Tier on
+recent accounts). The 2×20GB gp3 EBS volumes and the Elastic IP
+(free while attached to a running instance) aren't Free Tier–unlimited
+and run roughly **$5–8/month** combined. If you bump `InstanceType` up
+to `t3.medium` for more headroom, add another **~$20–25/month** for
+on-demand compute. Destroy the stack when not in use if cost matters —
+see teardown above.
+
+Note: some AWS accounts (new sign-ups, accounts still under review)
+are restricted to Free Tier–eligible instance types only — launching
+anything larger fails with `InvalidRequest: not eligible for Free
+Tier` until that restriction lifts, regardless of what `InstanceType`
+you set here.

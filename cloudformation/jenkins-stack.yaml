@@ -20,7 +20,11 @@ Parameters:
 
   InstanceType:
     Type: String
-    Default: t3.medium
+    Default: t3.micro
+    Description: >
+      Free Tier eligible by default (t3.micro). Bump to t3.small/t3.medium
+      once your account allows non-Free-Tier types — Jenkins with several
+      plugins is tight on 1GB RAM.
 
   RootVolumeSize:
     Type: Number
