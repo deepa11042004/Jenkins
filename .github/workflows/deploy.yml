@@ -109,7 +109,8 @@ jobs:
               JenkinsAdminCidr="${CIDR}" \
               DockerHubUsername="${DOCKERHUB_USERNAME}" \
               DockerHubToken="${DOCKERHUB_TOKEN}" \
-              JenkinsDockerImage="${{ steps.image.outputs.image }}"
+              JenkinsDockerImage="${{ steps.image.outputs.image }}" \
+              InstanceType="t3.small"
 
       - name: Show Jenkins URL
         run: |
