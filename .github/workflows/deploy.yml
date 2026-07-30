@@ -48,6 +48,19 @@ jobs:
           echo "vpc_id=${VPC_ID}" >> "$GITHUB_OUTPUT"
           echo "subnet_id=${SUBNET_ID}" >> "$GITHUB_OUTPUT"
 
+      - name: Clean up a stuck failed stack, if any
+        run: |
+          STATUS=$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" \
+            --query "Stacks[0].StackStatus" --output text 2>/dev/null || echo "DOES_NOT_EXIST")
+          echo "Current stack status: ${STATUS}"
+          case "$STATUS" in
+            ROLLBACK_COMPLETE|CREATE_FAILED|DELETE_FAILED)
+              echo "Stack is stuck in ${STATUS} and can't be updated in place — deleting it first."
+              aws cloudformation delete-stack --stack-name "${STACK_NAME}"
+              aws cloudformation wait stack-delete-complete --stack-name "${STACK_NAME}"
+              ;;
+          esac
+
       - name: Deploy stack
         env:
           JENKINS_ADMIN_CIDR: ${{ secrets.JENKINS_ADMIN_CIDR }}
