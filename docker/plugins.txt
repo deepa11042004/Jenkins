@@ -1,0 +1,8 @@
+# One plugin ID per line (optionally pin a version: git:5.2.1).
+# See https://plugins.jenkins.io for the full catalog.
+git
+workflow-aggregator
+credentials-binding
+ssh-agent
+docker-workflow
+configuration-as-code

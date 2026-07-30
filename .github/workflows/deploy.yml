@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "cloudformation/**"
+      - "docker/**"
       - ".github/workflows/deploy.yml"
   workflow_dispatch: {}
 
@@ -48,6 +49,32 @@ jobs:
           echo "vpc_id=${VPC_ID}" >> "$GITHUB_OUTPUT"
           echo "subnet_id=${SUBNET_ID}" >> "$GITHUB_OUTPUT"
 
+      - name: Build and push custom Jenkins image
+        id: image
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DOCKERHUB_USERNAME" ]; then
+            echo "DOCKERHUB_USERNAME not set — deploying the public jenkins/jenkins image instead."
+            echo "image=jenkins/jenkins:lts-jdk17" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+
+          # Content-hash tag: only changes (and so only forces an EC2
+          # instance replacement) when Dockerfile/plugins.txt actually
+          # change, not on every unrelated push to this repo.
+          TAG=$(cat docker/Dockerfile docker/plugins.txt | sha256sum | cut -c1-12)
+          IMAGE="${DOCKERHUB_USERNAME}/jenkins-deployment"
+
+          docker build -t "${IMAGE}:${TAG}" -t "${IMAGE}:latest" docker/
+          docker push "${IMAGE}:${TAG}"
+          docker push "${IMAGE}:latest"
+
+          echo "image=${IMAGE}:${TAG}" >> "$GITHUB_OUTPUT"
+
       - name: Clean up a stuck failed stack, if any
         run: |
           STATUS=$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" \
@@ -81,7 +108,8 @@ jobs:
               SubnetId=${{ steps.net.outputs.subnet_id }} \
               JenkinsAdminCidr="${CIDR}" \
               DockerHubUsername="${DOCKERHUB_USERNAME}" \
-              DockerHubToken="${DOCKERHUB_TOKEN}"
+              DockerHubToken="${DOCKERHUB_TOKEN}" \
+              JenkinsDockerImage="${{ steps.image.outputs.image }}"
 
       - name: Show Jenkins URL
         run: |

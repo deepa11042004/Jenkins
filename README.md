@@ -13,14 +13,18 @@ cloudformation/
                         IAM role, EBS data volume, Elastic IP. This is
                         what GitHub Actions deploys on every push.
 docker/
-  docker-compose.yml   Reference copy, identical to what gets deployed —
-                        useful for testing Jenkins locally first.
+  Dockerfile           Your custom Jenkins image — starts from
+                        jenkins/jenkins:lts-jdk17, add plugins/config here.
+  plugins.txt           Plugin list installed into the image at build time.
+  docker-compose.yml    Builds & runs the same image locally, for testing
+                         before you push.
 deploy/
   iam-policy.json       Least-privilege policy for the AWS user GitHub
                          Actions uses to deploy.
 .github/workflows/
-  deploy.yml   Discovers your default VPC/subnet, then runs
-               `aws cloudformation deploy` on push to main.
+  deploy.yml   Builds + pushes docker/ to your Docker Hub repo, discovers
+               your default VPC/subnet, then runs `aws cloudformation
+               deploy` on push to main.
   destroy.yml  Manual-only, deletes the whole stack (typed confirmation).
 ```
 
@@ -49,8 +53,8 @@ New repository secret**. Add:
 | `AWS_SECRET_ACCESS_KEY` | From step 1 |
 | `AWS_REGION` | `ap-south-1` (or your chosen region) |
 | `JENKINS_ADMIN_CIDR` | Your IP in CIDR form, e.g. `1.2.3.4/32` (see security note below) |
-| `DOCKERHUB_USERNAME` | Optional. Your Docker Hub username — if set, the instance logs in before pulling the Jenkins image, raising the anonymous-pull rate limit. |
-| `DOCKERHUB_TOKEN` | Optional, required if `DOCKERHUB_USERNAME` is set. A Docker Hub **access token**, not your password — generate one at [hub.docker.com](https://hub.docker.com) → Account Settings → Security → New Access Token (Read-only scope is enough). See security note below. |
+| `DOCKERHUB_USERNAME` | Your Docker Hub username. If unset, the workflow falls back to deploying the public `jenkins/jenkins` image and skips the build/push step entirely — set it to deploy your own image from `docker/`. |
+| `DOCKERHUB_TOKEN` | Required if `DOCKERHUB_USERNAME` is set. A Docker Hub **access token** with **Read & Write** scope (the workflow pushes images), not your account password — generate one at [hub.docker.com](https://hub.docker.com) → Account Settings → Security → New Access Token. See security note below. |
 
 Optional but recommended: create a GitHub **Environment** named
 `production` (Settings → Environments) and require a reviewer on it.
@@ -90,13 +94,35 @@ last step prints the stack outputs, including the Jenkins URL.
    (`http://<elastic-ip>:8080`) in a browser and paste it in to finish
    the setup wizard.
 
+## Customizing the Jenkins image
+
+Add or remove plugins in [`docker/plugins.txt`](docker/plugins.txt)
+(one plugin ID per line, optionally pinned — `git:5.2.1`), or extend
+[`docker/Dockerfile`](docker/Dockerfile) directly for anything else
+(base packages, JCasC config, etc.). Push it, and the workflow:
+
+1. Builds the image and pushes it to `<your-dockerhub-username>/jenkins-deployment`,
+   tagged with both `:latest` and a short hash of the Dockerfile +
+   plugins.txt contents.
+2. Deploys the stack with that hash tag as the instance's image — since
+   the tag only changes when the image content actually changes, this
+   naturally only replaces the EC2 instance (see below) when there's
+   something new to run.
+
+Test locally first if you want faster iteration:
+```bash
+cd docker
+docker compose up -d --build
+open http://localhost:8080
+```
+
 ## Updating Jenkins / infra
 
 Change anything in `cloudformation/jenkins-stack.yaml` (instance type,
-volume size, security group rules, the Jenkins image tag in the
-`UserData` script, etc.) and push to `main` — the workflow re-deploys
-the stack. Changing `UserData` replaces the EC2 instance, but the
-Jenkins data volume is a separate resource and survives, so
+volume size, security group rules, etc.) and push to `main` — the
+workflow re-deploys the stack. Changing the deployed image tag or
+anything else that alters `UserData` replaces the EC2 instance, but
+the Jenkins data volume is a separate resource and survives, so
 plugins/jobs/credentials persist across rebuilds.
 
 ## Tearing it down

@@ -78,6 +78,15 @@ Parameters:
       output, but it's still stored in plaintext in this instance's
       UserData — use a scoped, revocable token, not a real password.
 
+  JenkinsDockerImage:
+    Type: String
+    Default: jenkins/jenkins:lts-jdk17
+    Description: >
+      Image the instance pulls and runs. The deploy workflow overrides
+      this with your own Docker Hub image (built from docker/Dockerfile)
+      when DOCKERHUB_USERNAME is set; otherwise it stays the public
+      default.
+
 Conditions:
   HasKeyName: !Not [!Equals [!Ref KeyName, ""]]
 
@@ -256,7 +265,7 @@ Resources:
           cat > /opt/jenkins/docker-compose.yml <<'COMPOSEEOF'
           services:
             jenkins:
-              image: jenkins/jenkins:lts-jdk17
+              image: ${JenkinsDockerImage}
               container_name: jenkins
               restart: unless-stopped
               ports:
