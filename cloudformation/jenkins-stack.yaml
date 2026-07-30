@@ -156,12 +156,18 @@ Resources:
 
           DATA_DISK=""
           for i in $(seq 1 24); do
-            for name in $(lsblk -dno NAME); do
-              if [ "$name" != "$ROOT_DISK" ]; then
+            while read -r name type; do
+              # TYPE=disk only — excludes loop devices (snapd mounts one
+              # per installed snap) and partitions, which otherwise get
+              # mistaken for the actual EBS data volume.
+              if [ "$type" = "disk" ] && [ "$name" != "$ROOT_DISK" ]; then
                 DATA_DISK="$name"
-                break 2
+                break
               fi
-            done
+            done < <(lsblk -dno NAME,TYPE)
+            if [ -n "$DATA_DISK" ]; then
+              break
+            fi
             sleep 5
           done
 
